@@ -195,3 +195,55 @@ Flujo de datos: cada página es dueña de su estado, pide datos con las funcione
 - **Página en blanco tras reescribir varios archivos:** el vigilante de archivos de Vite se quedó con una copia vacía; se arregla reiniciando `npm run dev`.
 - **Tildes rotas ("G�mez"):** la terminal de Windows envió bytes que no eran UTF-8; Go los reemplazó al decodificar el JSON. No era un error de React.
 - **Consola del navegador bloqueando el pegado:** protección de Chrome contra "self-XSS" (`allow pasting`).
+
+## Revisión línea por línea
+
+### ClientForm.tsx
+
+- **`...current` en `handleChange`:** `setValues((current) => ({ ...current, [name]: value }))` copia todos los campos actuales y sobrescribe solo el que cambió. Sin el `...current`, el objeto nuevo tendría un único campo y los otros tres desaparecerían del estado: TypeScript lo marcaría como error (`ClientInput` exige los cuatro campos), y sin tipos los inputs pasarían de "controlados" a "no controlados" (su `value` sería `undefined`). `[name]: value` usa el valor de la variable `name` como clave, y por eso una sola función sirve para los cuatro inputs.
+- **`type="button"` en Cancelar:** un `<button>` dentro de un `<form>` es `type="submit"` por defecto. Sin `type="button"`, al pulsar Cancelar pasarían dos cosas: se ejecuta su `onClick` (`onCancel`, que navega a `/`) y además se dispara el `onSubmit` del formulario, que, si los campos son válidos, ¡guardaría el cliente! `type="button"` hace que el botón solo ejecute su `onClick`.
+- **`e.preventDefault()`:** sin esto, enviar el formulario recarga la página y se pierde el estado de React.
+- **`try / catch / finally`:** `catch` muestra el error de la API; `finally` apaga `saving` con éxito o con fallo.
+- **`value` inicial con `client?.nombre ?? ''`:** `useState` solo usa el valor inicial la primera vez que el componente aparece; por eso, para cargar otro cliente, hay que crear el formulario de nuevo (cambiando el `key`).
+
+### main.tsx y App.tsx
+
+- **Orden del árbol en `main.tsx`:** `StrictMode` → `BrowserRouter` → `App`. El router tiene que envolver todo lo que lo use, incluida la cabecera con `<Link>`. Si `BrowserRouter` envolviera solo a `<Routes>`, el `<Link>` de la cabecera quedaría fuera, daría error al dibujar (`useHref() may be used only in the context of a <Router>`) y toda la app se pondría en blanco.
+- **`App` no tiene estado ni lógica:** solo define la estructura (cabecera fija y `<Routes>`). Lo de fuera de `<Routes>` no cambia; lo de dentro cambia con la URL.
+- **Especificidad de las rutas:** `/clientes/nuevo` no choca con `/clientes/:id` porque React Router ordena por especificidad, no por el orden del código: un segmento fijo gana a un parámetro, y un parámetro gana al comodín `*`.
+- **`className`, no `class`:** `class` es palabra reservada de JavaScript.
+
+### types.ts y api/clients.ts
+
+- **Una `interface` no genera código:** solo existe para el compilador. Tengo dos: `Client` (lo que recibo) y `ClientInput` (lo que envío, sin `id` ni fechas, que pone el servidor).
+- **Los tipos son una promesa, no una verificación:** si Go cambiara `nombre` por `name`, TypeScript compilaría sin quejarse y el fallo sería silencioso en ejecución (`client.nombre` sería `undefined` y la columna saldría vacía, sin ningún error). Se detectaría al usar la app, no al compilar.
+- **Genérico `<T>` en `request<T>`:** un "tipo comodín" que se decide en cada llamada (`request<Client[]>` devuelve una promesa de lista; `request<Client>`, de uno solo). Una sola función sirve para todas las respuestas.
+- **`request` centraliza el manejo de errores:** convierte cualquier respuesta no exitosa en una excepción con el mensaje de la API. Las páginas solo necesitan `try/catch`.
+- **204 al borrar:** no hay cuerpo, así que no se llama a `res.json()`.
+- **Fechas como `string`:** el JSON no tiene tipo fecha; Go las manda como texto ISO y se convierten con `new Date(...)` al mostrarlas.
+
+### ClientTable.tsx
+
+- **Es un componente de presentación:** recibe datos y funciones por props, no tiene estado ni conoce la red.
+- **Datos hacia abajo, eventos hacia arriba:** los datos bajan por props; cuando el usuario actúa, la tabla llama a la función que recibió (`onDelete`) y la página decide qué hacer.
+- **`key` y el DOM:** al borrar, React vuelve a ejecutar la función del componente y recorre las filas (barato), pero compara por `key` y solo quita del DOM la fila que desapareció. Ejecutar la función no es lo mismo que actualizar el DOM.
+- **`onClick={() => onDelete(client)}`:** sin la flecha, `onDelete(client)` se ejecutaría al dibujar, una vez por fila (saldrían tantos diálogos como clientes), y como devuelve una promesa, `onClick` recibiría una promesa en vez de una función.
+- **`Link` para navegar, `button` para actuar:** cada uno anuncia su rol correcto a los lectores de pantalla.
+- **React escapa el texto** que se muestra, lo que protege contra XSS.
+
+### Las páginas
+
+- **Patrón común:** tres estados (datos, `loading` empieza en `true`, `error` empieza en `null`) → `useEffect([])` que llama a la API → salidas tempranas para cargando y error → dibujar los datos.
+- **`ClientFormPage` sirve a dos rutas:** `useParams()` devuelve `id`; si es `undefined`, se crea, y si tiene valor, se edita. `loading` empieza en `id !== undefined`: un booleano, `true` al editar (hay que cargar el cliente) y `false` al crear (no hay nada que esperar).
+- **`[id]` en las dependencias:** el efecto vuelve a correr si cambia el `id`.
+- **Borrar después de la confirmación:** el cliente se quita de la lista solo después del `await deleteClient(...)`. Hacerlo antes se llama actualización optimista; exige deshacer el cambio si la API falla. Aquí se eligió la versión simple y segura.
+- **Estrechamiento de tipos:** `if (error || client === null) return ...` le garantiza a TypeScript que, después, `client` ya no es `null`.
+- **`||` vs `??`:** `client.telefono || '—'` también reacciona al texto vacío; `??` solo a `null` y `undefined`.
+
+### Las pruebas
+
+- **`vi.fn()` es una función espía:** además de poder llamarse, recuerda con qué argumentos la llamaron, y por eso se puede comprobar con `toHaveBeenCalledWith`. `onSave` en la prueba hace de la función que la página le pasa al formulario.
+- **`vi.mock('../api/clients')`:** sustituye el módulo entero por funciones falsas; cada prueba decide la respuesta (`mockResolvedValue` o `mockRejectedValue`).
+- **`MemoryRouter`:** `ClientListPage` usa `<Link>`, que necesita un router. `ClientForm` no usa nada del router, así que se prueba sin él: un componente con menos dependencias es más fácil de probar.
+- **Probar comportamiento, no implementación:** se busca por texto, rol y etiqueta (lo que ve el usuario), no por clases CSS.
+- **Lo que no cubren:** el borrado, la edición, la validación del formulario y las páginas de detalle y de formulario. Las 3 pruebas cumplen el plan del brief, pero la cobertura es parcial.
